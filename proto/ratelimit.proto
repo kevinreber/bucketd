@@ -1,0 +1,10 @@
+// Scaffolding stub — gRPC service definition lands in Phase 1.
+syntax = "proto3";
+
+package bucketd.v1;
+
+option go_package = "github.com/kevinreber/bucketd/proto;ratelimitpb";
+
+service RateLimiter {
+  // Phase 1: implement Allow(key, tokens) -> {allowed, remaining, retry_after_ms}.
+}

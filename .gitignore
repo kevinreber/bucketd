@@ -1,0 +1,29 @@
+# Compiled binaries
+bin/
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local dev
+.env
+.env.local
+*.local
+
+# Vendor (we use modules, not vendor)
+vendor/
