@@ -21,7 +21,7 @@ func TestRoutedAddr_SameKeyAlwaysSameAddr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 
 	for _, key := range []string{"user-1", "user-42", "🦔", "very long key here"} {
 		first := c.RoutedAddr(key)
@@ -39,7 +39,7 @@ func TestRoutedAddr_KeysSpreadAcrossNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 
 	counts := map[string]int{}
 	for i := 0; i < 3000; i++ {
@@ -61,7 +61,7 @@ func TestRoutedAddr_AddNodeMovesSomeKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 
 	const numKeys = 3000
 	before := make([]string, numKeys)
@@ -89,7 +89,7 @@ func TestRoutedAddr_RemoveNodeMovesOnlyAffected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
 
 	const numKeys = 3000
 	before := make([]string, numKeys)
