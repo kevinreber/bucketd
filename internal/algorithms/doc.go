@@ -1,11 +1,8 @@
-// Package algorithms implements the two rate-limit algorithms:
+// Package algorithms implements the rate-limit algorithms.
 //
-//   - tokenbucket.go — classic token bucket (bursty)
-//   - slidingwindow.go — log-based sliding window (smooth)
+//   - tokenbucket.go — classic token bucket (bursty). Implemented in Phase 1.
+//   - slidingwindow.go — log-based sliding window (smooth). Lands in Phase 2.
 //
-// Both expose the same Algorithm interface so backend code can swap them
-// without conditionals.
-//
-// Scaffolding stub — algorithms land in Phase 1 (token bucket) and
-// Phase 2 (sliding window).
+// Both algorithms expose a Verdict struct describing the allow/deny outcome
+// plus retry hints. Backend code (memory, Redis) wraps them per key.
 package algorithms

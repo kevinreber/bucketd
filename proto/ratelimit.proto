@@ -1,10 +1,47 @@
-// Scaffolding stub — gRPC service definition lands in Phase 1.
 syntax = "proto3";
 
 package bucketd.v1;
 
 option go_package = "github.com/kevinreber/bucketd/proto;ratelimitpb";
 
+// RateLimiter is the gRPC service exposed by bucketd.
 service RateLimiter {
-  // Phase 1: implement Allow(key, tokens) -> {allowed, remaining, retry_after_ms}.
+  // Allow asks the bucket associated with `key` for `tokens` tokens.
+  // Returns whether the request was allowed, how many tokens remain in the
+  // bucket after the call, and (when denied) how long the caller should wait
+  // before retrying.
+  rpc Allow(AllowRequest) returns (AllowResponse);
+}
+
+// AllowRequest is a single rate-limit query.
+message AllowRequest {
+  // The key whose bucket should be charged. Typically caller-chosen
+  // (e.g., user ID, API key, IP). Consistent hashing of this key is what
+  // routes the request to a specific bucketd node in multi-node mode.
+  string key = 1;
+
+  // How many tokens this request wants to consume. Must be >= 1.
+  int32 tokens = 2;
+
+  // Bucket configuration. Bucketd is stateless on config — the caller passes
+  // the limit parameters on every Allow call. This lets a single bucketd
+  // serve multiple consumers with different rate-limit shapes without any
+  // server-side configuration plumbing.
+  int32 capacity = 3;      // Max tokens the bucket can hold.
+  double refill_rate = 4;  // Tokens added per second.
+}
+
+// AllowResponse is the verdict for a single rate-limit query.
+message AllowResponse {
+  // True iff `tokens` were granted and deducted from the bucket.
+  bool allowed = 1;
+
+  // Tokens left in the bucket after this call (or before, on a deny).
+  // Integer for client convenience; bucketd's internal state is fractional
+  // and gets floored on the wire.
+  int32 remaining = 2;
+
+  // When denied: estimated milliseconds until enough tokens refill to grant
+  // the request. Zero when allowed.
+  int32 retry_after_ms = 3;
 }
