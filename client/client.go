@@ -25,12 +25,41 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/kevinreber/bucketd/internal/shard"
 	ratelimitpb "github.com/kevinreber/bucketd/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 )
+
+// defaultServiceConfig retries Allow on UNAVAILABLE (transient network /
+// instance restart). Allow is naturally idempotent — granting the same
+// bucket twice is exactly what concurrent retries would do anyway, so
+// retry-on-failure is safe.
+const defaultServiceConfig = `{
+  "methodConfig": [{
+    "name": [{"service": "bucketd.v1.RateLimiter"}],
+    "retryPolicy": {
+      "MaxAttempts": 3,
+      "InitialBackoff": "0.05s",
+      "MaxBackoff": "0.5s",
+      "BackoffMultiplier": 2.0,
+      "RetryableStatusCodes": ["UNAVAILABLE"]
+    }
+  }]
+}`
+
+// defaultKeepalive sends an HTTP/2 ping every 30s on idle connections; if
+// the server doesn't respond within 10s, gRPC closes the conn so the next
+// RPC re-dials. Protects against silent NAT-table drops common in cloud
+// deployments (Fly.io, etc.).
+var defaultKeepalive = keepalive.ClientParameters{
+	Time:                30 * time.Second,
+	Timeout:             10 * time.Second,
+	PermitWithoutStream: false,
+}
 
 // Limit describes a token-bucket rate-limit policy. Bucketd is stateless on
 // policy — callers pass these on every Allow call.
@@ -41,8 +70,27 @@ type Limit struct {
 
 // Verdict is the outcome of an Allow call, mirroring the proto AllowResponse.
 type Verdict struct {
-	Allowed      bool
-	Remaining    int32
+	// Allowed reports whether the requested tokens were granted.
+	Allowed bool
+
+	// Remaining is an advisory hint about bucket state after this call.
+	//
+	// Important: this value is NOT reliable for arithmetic decisions across
+	// multiple concurrent callers. On the allow path it reflects the bucket
+	// state immediately after this call (other concurrent callers may
+	// already have consumed more). On the deny path it reflects the bucket
+	// state at the moment the deny decision was made (i.e., the floor of
+	// what's left before the request would have succeeded).
+	//
+	// Use it for UX hints ("X requests remaining") or coarse retry-budget
+	// decisions. Don't use it for fairness or scheduling guarantees.
+	Remaining int32
+
+	// RetryAfterMs is the estimated time until the bucket would grant a
+	// request of the same size, in milliseconds. Zero when Allowed.
+	//
+	// Computed by the algorithm, not measured — actual refill may vary
+	// slightly with clock skew between bucketd nodes when using Redis.
 	RetryAfterMs int32
 }
 
@@ -131,14 +179,24 @@ func (c *Client) AddNode(addr string) {
 // RemoveNode drops a bucketd address from the ring and closes any open
 // connection to it. Lookups after this call move all of that node's keys
 // to other nodes.
+//
+// Order of operations matters: we close+delete the cached connection FIRST
+// (under c.mu), then remove from the ring. Doing it in this order ensures
+// that any concurrent Allow that grabbed the soon-to-be-removed address
+// from the ring will either (a) find no cached conn and re-dial (which
+// will fail or succeed depending on the node's actual liveness — caller's
+// problem either way), or (b) use the closed conn and get a clean RPC
+// error. Either is recoverable; the inverse order would let a concurrent
+// connFor cache a brand-new conn AFTER the ring removal, which RemoveNode
+// would never see and which would leak until Close.
 func (c *Client) RemoveNode(addr string) {
-	c.ring.Remove(addr)
 	c.mu.Lock()
 	if gc, ok := c.conns[addr]; ok {
 		_ = gc.conn.Close()
 		delete(c.conns, addr)
 	}
 	c.mu.Unlock()
+	c.ring.Remove(addr)
 }
 
 // Close releases all gRPC connections held by the client.
@@ -174,6 +232,8 @@ func (c *Client) connFor(addr string) (*grpcConn, error) {
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(defaultKeepalive),
+		grpc.WithDefaultServiceConfig(defaultServiceConfig),
 	)
 	if err != nil {
 		return nil, err

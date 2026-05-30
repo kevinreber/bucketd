@@ -103,9 +103,17 @@ type AllowResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// True iff `tokens` were granted and deducted from the bucket.
 	Allowed bool `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
-	// Tokens left in the bucket after this call (or before, on a deny).
-	// Integer for client convenience; bucketd's internal state is fractional
-	// and gets floored on the wire.
+	// Advisory tokens-remaining hint.
+	//
+	// When `allowed=true`: bucket state immediately after this call. Other
+	// concurrent callers may already have consumed more by the time the
+	// response reaches you.
+	//
+	// When `allowed=false`: bucket state at the moment the deny decision was
+	// made (i.e., what was left before this request would have succeeded).
+	//
+	// Use for UX hints ("X requests remaining"), NOT for arithmetic across
+	// multiple callers — there is no fairness or ordering guarantee.
 	Remaining int32 `protobuf:"varint,2,opt,name=remaining,proto3" json:"remaining,omitempty"`
 	// When denied: estimated milliseconds until enough tokens refill to grant
 	// the request. Zero when allowed.
@@ -170,17 +178,18 @@ var File_proto_ratelimit_proto protoreflect.FileDescriptor
 const file_proto_ratelimit_proto_rawDesc = "" +
 	"\n" +
 	"\x15proto/ratelimit.proto\x12\n" +
-	"bucketd.v1\"u\n" +
+	"bucketd.v1\"\x86\x01\n" +
 	"\fAllowRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
 	"\x06tokens\x18\x02 \x01(\x05R\x06tokens\x12\x1a\n" +
 	"\bcapacity\x18\x03 \x01(\x05R\bcapacity\x12\x1f\n" +
 	"\vrefill_rate\x18\x04 \x01(\x01R\n" +
-	"refillRate\"m\n" +
+	"refillRateJ\x04\b\x05\x10\x0fR\talgorithm\"s\n" +
 	"\rAllowResponse\x12\x18\n" +
 	"\aallowed\x18\x01 \x01(\bR\aallowed\x12\x1c\n" +
 	"\tremaining\x18\x02 \x01(\x05R\tremaining\x12$\n" +
-	"\x0eretry_after_ms\x18\x03 \x01(\x05R\fretryAfterMs2K\n" +
+	"\x0eretry_after_ms\x18\x03 \x01(\x05R\fretryAfterMsJ\x04\b\x04\x10\n" +
+	"2K\n" +
 	"\vRateLimiter\x12<\n" +
 	"\x05Allow\x12\x18.bucketd.v1.AllowRequest\x1a\x19.bucketd.v1.AllowResponseB1Z/github.com/kevinreber/bucketd/proto;ratelimitpbb\x06proto3"
 

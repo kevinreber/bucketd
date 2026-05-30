@@ -11,6 +11,29 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// mapBackendError translates a backend error into a gRPC status. Backend
+// errors fall into three buckets:
+//   - Caller misuse (invalid tokens / config / empty key) → InvalidArgument
+//   - Context expiration / cancellation → matching gRPC codes
+//   - Everything else (Redis network failures, Lua errors) → Internal
+//
+// Distinguishing these lets the LLM Gateway retry on Unavailable but fail
+// fast on InvalidArgument.
+func mapBackendError(err error) error {
+	switch {
+	case errors.Is(err, algorithms.ErrInvalidTokens),
+		errors.Is(err, algorithms.ErrInvalidConfig),
+		errors.Is(err, backend.ErrEmptyKey):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
+	default:
+		return status.Errorf(codes.Internal, "backend allow failed: %v", err)
+	}
+}
+
 // Server implements the bucketd.v1.RateLimiter gRPC service.
 //
 // Stateless aside from its Backend reference. The Backend owns all bucket
@@ -56,11 +79,7 @@ func (s *Server) Allow(
 		req.GetRefillRate(),
 	)
 	if err != nil {
-		if errors.Is(err, algorithms.ErrInvalidTokens) ||
-			errors.Is(err, algorithms.ErrInvalidConfig) {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-		return nil, status.Errorf(codes.Internal, "backend allow failed: %v", err)
+		return nil, mapBackendError(err)
 	}
 
 	return &ratelimitpb.AllowResponse{

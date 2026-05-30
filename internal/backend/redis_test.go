@@ -137,17 +137,25 @@ func TestRedis_TokenBucket_RefillsOverTime(t *testing.T) {
 }
 
 // The marquee test: under heavy concurrency, the bucket math stays exact.
-// If Lua atomicity were broken (e.g., we did Get/Set in Go without WATCH),
-// concurrent goroutines would race and either over- or under-grant.
+//
+// Discrimination property: workers MUST exceed capacity. If they were equal,
+// a non-atomic implementation (e.g., GET-then-SET in Go without WATCH or a
+// Lua script) could still produce the right count: 100 workers all read
+// "100 tokens", each computes "99 remaining", each writes 99 — the count of
+// successes is 100 but the bucket ends with 99 tokens not 0. The test would
+// pass for the wrong reason. With workers=100 and capacity=10, a broken
+// implementation would over-grant (up to 100 successes against a 10-capacity
+// bucket), which the assertion below catches.
 func TestRedis_TokenBucket_AtomicityUnderConcurrency(t *testing.T) {
 	be := newRedisBackend(t)
 	ctx := context.Background()
 
 	const (
 		key      = "atomicity-test"
-		capacity = 100
+		capacity = 10
 		workers  = 100
-		// Use a low refill rate so the bucket effectively can only grant `capacity` tokens.
+		// Near-zero refill so the bucket cannot grant more than `capacity`
+		// over the test's wall-clock duration.
 		refillRate = 0.0001
 	)
 
@@ -175,18 +183,19 @@ func TestRedis_TokenBucket_AtomicityUnderConcurrency(t *testing.T) {
 	gotAllowed := allowed.Load()
 	gotDenied := denied.Load()
 
-	// With 100 workers and capacity 100, exactly 100 should succeed.
-	// Refill is negligible at 0.0001/sec over the test's duration.
+	// Atomicity invariant: allows must NEVER exceed capacity, regardless of
+	// concurrency. A broken implementation would over-grant up to `workers`.
 	if gotAllowed > int64(capacity) {
-		t.Errorf("over-granted: allowed=%d, capacity=%d (atomicity broken)", gotAllowed, capacity)
+		t.Errorf("over-granted: allowed=%d > capacity=%d (atomicity broken)", gotAllowed, capacity)
 	}
 	if gotAllowed+gotDenied != int64(workers) {
-		t.Errorf("counts don't add up: allowed=%d + denied=%d != workers=%d",
+		t.Errorf("accounting hole: allowed=%d + denied=%d != workers=%d",
 			gotAllowed, gotDenied, workers)
 	}
-	// We should be very close to capacity. Allow some slack for refill.
-	if gotAllowed < int64(capacity-1) {
-		t.Errorf("under-granted: allowed=%d, capacity=%d", gotAllowed, capacity)
+	// Lower bound: exactly capacity should be granted (refill is negligible).
+	if gotAllowed != int64(capacity) {
+		t.Errorf("expected exactly %d allows, got %d (under-grant suggests a different bug)",
+			capacity, gotAllowed)
 	}
 }
 

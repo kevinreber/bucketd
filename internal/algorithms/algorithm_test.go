@@ -139,9 +139,45 @@ func TestSlidingWindow_DropsOldEvents(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		_, _ = sw.Allow(1)
 	}
-	now = now.Add(1500 * time.Millisecond) // past the window
+	now = now.Add(1500 * time.Millisecond) // well past the window
 	if v, _ := sw.Allow(1); !v.Allowed {
 		t.Errorf("expected allow after window expired")
+	}
+}
+
+// Exact-boundary tests: probe the trim semantics at the t == cutoff edge.
+// "Strict less than now-window" means an event scored at exactly
+// now-window is still inside the window (NOT trimmed).
+func TestSlidingWindow_BoundaryExactly_AtCutoff_StillInWindow(t *testing.T) {
+	now := time.Unix(0, 0)
+	clock := func() time.Time { return now }
+	sw, _ := algorithms.NewSlidingWindow(1, time.Second, clock)
+
+	_, _ = sw.Allow(1) // event at t=0
+
+	// Advance to exactly 1 second later. The event at t=0 is at the
+	// boundary — should still count as in-window.
+	now = now.Add(time.Second)
+
+	v, _ := sw.Allow(1)
+	if v.Allowed {
+		t.Errorf("event at t=0 should still be in-window at t=1s (strict-less-than trim)")
+	}
+}
+
+func TestSlidingWindow_BoundaryExactly_PastCutoff_Trimmed(t *testing.T) {
+	now := time.Unix(0, 0)
+	clock := func() time.Time { return now }
+	sw, _ := algorithms.NewSlidingWindow(1, time.Second, clock)
+
+	_, _ = sw.Allow(1) // event at t=0
+
+	// One nanosecond past the boundary — should be trimmed.
+	now = now.Add(time.Second + 1)
+
+	v, _ := sw.Allow(1)
+	if !v.Allowed {
+		t.Errorf("event at t=0 should be expired at t=1s+1ns")
 	}
 }
 
