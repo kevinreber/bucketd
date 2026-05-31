@@ -59,6 +59,7 @@ func TestRun_ServesAllowOverRealNetwork(t *testing.T) {
 	addr := pickFreePort(t)
 	cfg := server.Config{
 		Addr:            addr,
+		HTTPAddr:        "", // disable HTTP — these tests target gRPC only
 		ShutdownTimeout: 2 * time.Second,
 		Logger:          quietLogger(),
 	}
@@ -104,6 +105,7 @@ func TestRun_GracefulShutdownOnContextCancel(t *testing.T) {
 	addr := pickFreePort(t)
 	cfg := server.Config{
 		Addr:            addr,
+		HTTPAddr:        "", // disable HTTP — these tests target gRPC only
 		ShutdownTimeout: 2 * time.Second,
 		Logger:          quietLogger(),
 	}
@@ -131,7 +133,8 @@ func TestRun_GracefulShutdownOnContextCancel(t *testing.T) {
 func TestRun_HealthFlipsToNotServingDuringShutdown(t *testing.T) {
 	addr := pickFreePort(t)
 	cfg := server.Config{
-		Addr: addr,
+		Addr:     addr,
+		HTTPAddr: "",
 		// Generous shutdown so we have time to observe the NOT_SERVING flip
 		// before the server actually exits.
 		ShutdownTimeout: 5 * time.Second,
@@ -197,6 +200,7 @@ func TestLoadConfigFromEnv_RejectsBadDuration(t *testing.T) {
 func TestRun_RejectsUnreachableRedis(t *testing.T) {
 	cfg := server.Config{
 		Addr:            pickFreePort(t),
+		HTTPAddr:        "",
 		RedisURL:        "redis://127.0.0.1:1", // port 1 is unbindable; ping fails fast
 		ShutdownTimeout: 1 * time.Second,
 		Logger:          quietLogger(),
