@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/kevinreber/bucketd/internal/backend"
@@ -25,6 +27,11 @@ type Config struct {
 	// Addr is the gRPC listen address. Defaults to ":50051".
 	Addr string
 
+	// HTTPAddr is the HTTP listen address that serves /v1/allow, /healthz,
+	// and /metrics. Defaults to ":8080". Set to empty string to disable
+	// the HTTP server entirely (gRPC only).
+	HTTPAddr string
+
 	// RedisURL, if set, switches the backend to Redis. Empty means in-process
 	// Memory backend (Phase 1 mode — fine for single-node dev and tests).
 	RedisURL string
@@ -41,15 +48,20 @@ type Config struct {
 // LoadConfigFromEnv reads runtime config from environment variables. Missing
 // values fall back to sane defaults.
 //
-//   - ADDR             — listen address (default ":50051")
+//   - ADDR             — gRPC listen address (default ":50051")
+//   - HTTP_ADDR        — HTTP listen address (default ":8080", set to "off" to disable)
 //   - REDIS_URL        — if set, use Redis backend
 //   - SHUTDOWN_TIMEOUT — graceful shutdown budget (default "10s", Go duration syntax)
 func LoadConfigFromEnv() (Config, error) {
 	c := Config{
 		Addr:            envOr("ADDR", ":50051"),
+		HTTPAddr:        envOr("HTTP_ADDR", ":8080"),
 		RedisURL:        os.Getenv("REDIS_URL"),
 		ShutdownTimeout: 10 * time.Second,
 		Logger:          slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+	}
+	if c.HTTPAddr == "off" {
+		c.HTTPAddr = ""
 	}
 	if raw := os.Getenv("SHUTDOWN_TIMEOUT"); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -68,9 +80,10 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// Run starts the bucketd gRPC server and blocks until ctx is cancelled or
-// the listener stops accepting. On ctx cancel, it triggers a graceful
-// shutdown bounded by Config.ShutdownTimeout, then falls back to Stop().
+// Run starts the bucketd gRPC + HTTP servers and blocks until ctx is
+// cancelled or one of the listeners stops accepting. On ctx cancel, it
+// triggers a graceful shutdown bounded by Config.ShutdownTimeout, then
+// falls back to forceful Stop.
 //
 // Returns nil on a clean shutdown, error otherwise.
 func Run(ctx context.Context, cfg Config) error {
@@ -84,42 +97,76 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	lis, err := net.Listen("tcp", cfg.Addr)
+	// `serving` mirrors the gRPC Health service's SERVING state for the
+	// HTTP /healthz endpoint. Flipped to 0 during shutdown so both
+	// transports report NOT_SERVING / 503 to load balancers.
+	var serving atomic.Int32
+	serving.Store(1)
+
+	// ---- gRPC ----
+	grpcLis, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.Addr, err)
 	}
-	logger.Info("listening", "addr", lis.Addr().String())
+	logger.Info("grpc listening", "addr", grpcLis.Addr().String())
 
 	grpcServer := grpc.NewServer()
 	ratelimitpb.RegisterRateLimiterServer(grpcServer, NewServer(be))
 
-	// Register the standard gRPC health service so Fly.io / load balancers can
-	// distinguish a cold-starting instance from a dead one.
 	hs := health.NewServer()
 	hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	hs.SetServingStatus("bucketd.v1.RateLimiter", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcServer, hs)
 
-	// Serve in its own goroutine so we can react to ctx cancellation here.
-	serveErr := make(chan error, 1)
-	go func() {
-		serveErr <- grpcServer.Serve(lis)
-	}()
+	grpcErr := make(chan error, 1)
+	go func() { grpcErr <- grpcServer.Serve(grpcLis) }()
 
+	// ---- HTTP (optional) ----
+	var httpServer *http.Server
+	httpErr := make(chan error, 1)
+	if cfg.HTTPAddr != "" {
+		httpServer = &http.Server{
+			Addr:              cfg.HTTPAddr,
+			Handler:           HTTPMux(be, &serving),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		logger.Info("http listening", "addr", cfg.HTTPAddr)
+		go func() {
+			err := httpServer.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				httpErr <- fmt.Errorf("http serve: %w", err)
+				return
+			}
+			httpErr <- nil
+		}()
+	}
+
+	// ---- Wait for shutdown signal or a serve failure ----
 	select {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received, draining", "timeout", cfg.ShutdownTimeout)
-		// Flip the health service to NOT_SERVING immediately so load balancers
-		// stop sending new traffic while we drain in-flight RPCs.
+
+		// Flip both health surfaces to NOT_SERVING first so load balancers
+		// stop sending new traffic while we drain in-flight requests.
 		hs.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 		hs.SetServingStatus("bucketd.v1.RateLimiter", healthpb.HealthCheckResponse_NOT_SERVING)
+		serving.Store(0)
 
+		// Shut down the HTTP server with the same timeout budget.
+		if httpServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			if err := httpServer.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("http shutdown error", "err", err)
+			}
+			cancel()
+		}
+
+		// Drain gRPC.
 		done := make(chan struct{})
 		go func() {
 			grpcServer.GracefulStop()
 			close(done)
 		}()
-
 		select {
 		case <-done:
 			logger.Info("graceful shutdown complete")
@@ -130,9 +177,16 @@ func Run(ctx context.Context, cfg Config) error {
 			return nil
 		}
 
-	case err := <-serveErr:
+	case err := <-grpcErr:
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			return fmt.Errorf("grpc serve: %w", err)
+		}
+		return nil
+
+	case err := <-httpErr:
+		// HTTP server failed unexpectedly; treat as fatal.
+		if err != nil {
+			return err
 		}
 		return nil
 	}

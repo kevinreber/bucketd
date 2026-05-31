@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/kevinreber/bucketd/internal/algorithms"
 	"github.com/kevinreber/bucketd/internal/backend"
+	"github.com/kevinreber/bucketd/internal/observe"
 	ratelimitpb "github.com/kevinreber/bucketd/proto"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -63,11 +65,19 @@ func NewServer(b Backend) *Server {
 // Allow translates a proto AllowRequest into a Backend.Allow call and shapes
 // the response. Input validation is delegated to the backend / algorithm; this
 // layer only converts error codes.
+//
+// Instrumentation: every Allow records exactly one entry in
+// bucketd_allow_total (labeled by outcome) and one observation in
+// bucketd_allow_duration_seconds.
 func (s *Server) Allow(
 	ctx context.Context,
 	req *ratelimitpb.AllowRequest,
 ) (*ratelimitpb.AllowResponse, error) {
+	start := time.Now()
+	defer observe.ObserveAllowDuration(start)
+
 	if req.GetKey() == "" {
+		observe.RecordAllow(observe.ResultError)
 		return nil, status.Error(codes.InvalidArgument, "key must not be empty")
 	}
 
@@ -79,7 +89,14 @@ func (s *Server) Allow(
 		req.GetRefillRate(),
 	)
 	if err != nil {
+		observe.RecordAllow(observe.ResultError)
 		return nil, mapBackendError(err)
+	}
+
+	if v.Allowed {
+		observe.RecordAllow(observe.ResultAllowed)
+	} else {
+		observe.RecordAllow(observe.ResultDenied)
 	}
 
 	return &ratelimitpb.AllowResponse{
