@@ -40,10 +40,17 @@ if count + requested > limit then
 end
 
 -- Allowed. Record the events with unique member IDs.
-for _ = 1, requested do
-  local seq = redis.call('INCR', seq_key)
-  redis.call('ZADD', zset_key, now_ms, tostring(seq))
+-- Batch the counter bump (one INCRBY) and the sorted-set inserts (one ZADD
+-- with N members), so the script blocks Redis for O(1) round-trip work
+-- instead of O(requested) serial commands.
+local end_seq = tonumber(redis.call('INCRBY', seq_key, requested))
+local start_seq = end_seq - requested + 1
+local zadd_args = {}
+for seq = start_seq, end_seq do
+  table.insert(zadd_args, now_ms)
+  table.insert(zadd_args, tostring(seq))
 end
+redis.call('ZADD', zset_key, unpack(zadd_args))
 
 -- Auto-expire the window and sequence keys when no events have arrived
 -- for 2x the window duration.

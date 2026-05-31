@@ -49,19 +49,34 @@ func NewRing(virtualNodes int) *Ring {
 	}
 }
 
-// Add inserts a node into the ring. Adding a node that already exists is a
-// no-op. Returns the count of positions added.
+// Add inserts a node into the ring. Adding an already-present node is a
+// no-op (existing positions are kept). Returns the count of positions added.
+//
+// Hash collisions in uint64-space are vanishingly rare (~450 points among
+// 18 quintillion slots), but if hashVirtualNode(node, i) ever lands on an
+// existing position, we increment the index and try again instead of
+// skipping. This guarantees every node gets exactly r.virtualNodes positions,
+// preventing permanent load imbalance after a remove + re-add of a node that
+// previously collided.
 func (r *Ring) Add(node string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Don't re-seed if the node is already in the ring.
+	for _, owner := range r.owners {
+		if owner == node {
+			return 0
+		}
+	}
+
 	added := 0
-	for i := 0; i < r.virtualNodes; i++ {
-		pos := hashVirtualNode(node, i)
+	probe := 0
+	const maxProbes = 10_000 // defensive cap; in practice collisions are exceedingly rare
+	for added < r.virtualNodes && probe < r.virtualNodes+maxProbes {
+		pos := hashVirtualNode(node, probe)
+		probe++
 		if _, exists := r.owners[pos]; exists {
-			// Collision with an existing virtual node (own or another's).
-			// Skip rather than overwrite — keeps Remove symmetric.
-			continue
+			continue // collision; keep probing
 		}
 		r.owners[pos] = node
 		r.positions = append(r.positions, pos)

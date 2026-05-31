@@ -35,12 +35,30 @@ type Redis struct {
 
 // NewRedis wires a Redis backend to an existing redis.Client. The caller
 // owns the client lifecycle (pool size, timeouts, auth).
+//
+// Use NewRedisWithPreload at startup to fail fast if Redis is unreachable
+// or refuses to load the scripts.
 func NewRedis(client *redis.Client) *Redis {
 	return &Redis{
 		client:        client,
 		tokenBucket:   redis.NewScript(tokenBucketScript),
 		slidingWindow: redis.NewScript(slidingWindowScript),
 	}
+}
+
+// NewRedisWithPreload is NewRedis plus an upfront SCRIPT LOAD of both Lua
+// scripts. If Redis is unreachable or rejects the scripts, the returned
+// error surfaces immediately at startup instead of on the first user-facing
+// Allow call. Recommended for production wiring.
+func NewRedisWithPreload(ctx context.Context, client *redis.Client) (*Redis, error) {
+	r := NewRedis(client)
+	if err := r.tokenBucket.Load(ctx, client).Err(); err != nil {
+		return nil, fmt.Errorf("preload tokenbucket script: %w", err)
+	}
+	if err := r.slidingWindow.Load(ctx, client).Err(); err != nil {
+		return nil, fmt.Errorf("preload slidingwindow script: %w", err)
+	}
+	return r, nil
 }
 
 // Allow runs the token-bucket script against Redis for the given key.

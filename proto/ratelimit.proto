@@ -29,6 +29,16 @@ message AllowRequest {
   // server-side configuration plumbing.
   int32 capacity = 3;      // Max tokens the bucket can hold.
   double refill_rate = 4;  // Tokens added per second.
+
+  // Reserved for forthcoming fields. Old clients seeing a server-set value
+  // in these slots will ignore them (proto3 unknown-field semantics).
+  //   5 — algorithm (enum: TOKEN_BUCKET | SLIDING_WINDOW). Default
+  //       TOKEN_BUCKET. Will land in a follow-up sprint along with
+  //       sliding-window-specific params (window_ms, limit).
+  //   6–9 — reserved for algorithm-specific config (limit, window_ms, ...)
+  //   10–14 — reserved for caller metadata (e.g., trace_id, request_id).
+  reserved 5 to 14;
+  reserved "algorithm";
 }
 
 // AllowResponse is the verdict for a single rate-limit query.
@@ -36,12 +46,25 @@ message AllowResponse {
   // True iff `tokens` were granted and deducted from the bucket.
   bool allowed = 1;
 
-  // Tokens left in the bucket after this call (or before, on a deny).
-  // Integer for client convenience; bucketd's internal state is fractional
-  // and gets floored on the wire.
+  // Advisory tokens-remaining hint.
+  //
+  // When `allowed=true`: bucket state immediately after this call. Other
+  // concurrent callers may already have consumed more by the time the
+  // response reaches you.
+  //
+  // When `allowed=false`: bucket state at the moment the deny decision was
+  // made (i.e., what was left before this request would have succeeded).
+  //
+  // Use for UX hints ("X requests remaining"), NOT for arithmetic across
+  // multiple callers — there is no fairness or ordering guarantee.
   int32 remaining = 2;
 
   // When denied: estimated milliseconds until enough tokens refill to grant
   // the request. Zero when allowed.
   int32 retry_after_ms = 3;
+
+  // Reserved for forthcoming fields.
+  //   4 — algorithm_used (which algorithm actually served the request).
+  //   5–9 — reserved for debugging / observability fields (node_id, etc.).
+  reserved 4 to 9;
 }
