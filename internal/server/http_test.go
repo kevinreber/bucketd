@@ -168,7 +168,7 @@ func TestHTTP_MetricsExposesAllowCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/allow: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Scrape /metrics and assert our metric is present.
 	mresp, err := http.Get(base + "/metrics")
