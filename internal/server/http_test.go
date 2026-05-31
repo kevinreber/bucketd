@@ -67,7 +67,7 @@ func TestHTTP_AllowHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/allow: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -93,7 +93,7 @@ func TestHTTP_AllowRejectsBadJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -108,7 +108,7 @@ func TestHTTP_AllowRejectsEmptyKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -123,7 +123,7 @@ func TestHTTP_AllowRejectsBadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -137,7 +137,7 @@ func TestHTTP_HealthzReportsServing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -152,7 +152,7 @@ func TestHTTP_HealthzReportsServing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz (drain): %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != 503 {
 		t.Errorf("drain status = %d, want 503", resp2.StatusCode)
 	}
@@ -175,7 +175,7 @@ func TestHTTP_MetricsExposesAllowCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
-	defer mresp.Body.Close()
+	defer func() { _ = mresp.Body.Close() }()
 	body2, _ := io.ReadAll(mresp.Body)
 	if !bytes.Contains(body2, []byte("bucketd_allow_total")) {
 		t.Errorf("expected bucketd_allow_total in /metrics output, got:\n%s", body2)
